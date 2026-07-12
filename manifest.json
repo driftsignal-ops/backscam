@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "BackScam",
+  "version": "0.1.0",
+  "description": "Csendben elkerüli az MFA (made-for-advertising) jellegű oldalakat, ahelyett hogy blokkolná őket.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "BackScam"
+  },
+  "icons": {}
+}
