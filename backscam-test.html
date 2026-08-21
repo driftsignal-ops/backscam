@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8" />
+  <title>Teszt oldal - BackScam</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    .ad-slot {
+      background: repeating-linear-gradient(45deg, #ddd, #ddd 10px, #eee 10px, #eee 20px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #888;
+      font-size: 12px;
+    }
+    .content { padding: 8px; font-size: 13px; }
+    a.btn {
+      display: inline-block;
+      margin: 4px;
+      padding: 4px 10px;
+      background: #eee;
+      border: 1px solid #ccc;
+      font-size: 12px;
+      text-decoration: none;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <!-- Sok, nagy méretű "hirdetés" jellegű elem -> ad-density pontszám -->
+  <div id="ad-top" class="ad-slot" style="width:100%; height:250px;">AD SLOT (top)</div>
+
+  <div class="content">
+    <p>Rövid szöveg, sok linkkel.</p>
+    <a class="btn" href="#">Kattints ide</a>
+    <a class="btn" href="#">Tovább</a>
+    <a class="btn" href="#">Nézd meg</a>
+    <a class="btn" href="#">Következő</a>
+    <a class="btn" href="#">Több</a>
+    <a class="btn" href="#">Ide kattints</a>
+    <a class="btn" href="#">Folytatás</a>
+    <a class="btn" href="#">Megnézem</a>
+    <a class="btn" href="#">Tovább 2</a>
+    <a class="btn" href="#">Tovább 3</a>
+    <a class="btn" href="#">Tovább 4</a>
+    <a class="btn" href="#">Tovább 5</a>
+    <a class="btn" href="#">Tovább 6</a>
+    <a class="btn" href="#">Tovább 7</a>
+    <a class="btn" href="#">Tovább 8</a>
+    <a class="btn" href="#">Tovább 9</a>
+  </div>
+
+  <div id="ad-mid" class="ad-slot" style="width:100%; height:300px;">AD SLOT (middle)</div>
+
+  <!-- Hamis ad-network script src-ek - csak a hostname számít a pontozásnál,
+       nem kell ténylegesen betöltődnie -->
+  <script src="https://pagead2.googlesyndication.com/fake-test.js"></script>
+  <script src="https://securepubads.g.doubleclick.net/fake-test.js"></script>
+  <script src="https://ib.adnxs.com/fake-test.js"></script>
+  <script src="https://cdn.taboola.com/fake-test.js"></script>
+  <script src="https://static.criteo.net/fake-test.js"></script>
+
+  <div id="ad-bottom" class="ad-slot" style="width:100%; height:250px;">AD SLOT (bottom)</div>
+
+  <!-- Teljes képernyős, magas z-index-ű overlay -> aggressive popup pontszám -->
+  <div id="overlay" style="
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    z-index: 999999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 20px;
+  ">
+    TESZT OVERLAY (ez szimulálja az agresszív felugrót)
+  </div>
+</body>
+</html>

@@ -1,14 +1,15 @@
-// BackScam - content.js
-// Heurisztikai pontozás: megpróbálja felismerni az MFA (made-for-advertising)
-// jellegű oldalakat futásidőben, statikus lista nélkül.
+// BackScam - content.js (v0.2)
+// Folyamatos (nem egyszeri) DOM-alapú megfigyelés, hogy a késleltetve
+// betöltődő és a mozgó/eltűnő ("flash") reklámokat is elkapja.
 
 (() => {
   'use strict';
 
   // ---- Beállítások (becsült értékek, tesztelés alapján finomítandó) ----
-  const THRESHOLD = 55;          // 0-100 skálán ez felett gyanús
-  const RECHECK_DELAY_MS = 1500; // ennyit várunk, mielőtt újramérünk
-  const TOAST_DURATION_MS = 900; // ennyi ideig látszik a toast, mielőtt elnavigálunk
+  const THRESHOLD = 55;                // 0-100+ skálán ez felett gyanús
+  const MONITOR_DURATION_MS = 13000;   // ennyi ideig figyeljük az oldalt betöltés után
+  const CHECK_INTERVAL_MS = 2000;      // ennyi időnként újraszámoljuk a pontszámot
+  const TOAST_DURATION_MS = 1500;      // ennyi ideig látszik az értesítés navigálás előtt
 
   const KNOWN_AD_NETWORK_HOSTS = [
     'googlesyndication.com', 'doubleclick.net', 'adnxs.com',
@@ -17,7 +18,27 @@
     'propellerads.com', 'revcontent.com', 'mgid.com', 'adsterra.com'
   ];
 
-  // ---- 1. Hirdetés-sűrűség (0-30 pont) ----
+  // ---------------------------------------------------------------------
+  // DOM-alapú pontszám-jellemzők (minden mérésnél újraszámolva)
+  // ---------------------------------------------------------------------
+
+  function isAdLikeElement(el) {
+    if (!(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+
+    const classId = (el.className + ' ' + el.id).toLowerCase();
+    const looksAdNamed = /\bad-|-ad\b|advert|banner|promo/.test(classId);
+    const isPositioned = style.position === 'fixed' || style.position === 'absolute';
+    const area = rect.width * rect.height;
+    const viewportArea = window.innerWidth * window.innerHeight;
+    const sizable = area / viewportArea > 0.05; // legalább 5% a viewportból
+
+    return (looksAdNamed && sizable) || (isPositioned && sizable && el.tagName === 'IFRAME');
+  }
+
+  // 1. Hirdetés-sűrűség (0-20 pont)
   function scoreAdDensity() {
     const viewportArea = window.innerWidth * window.innerHeight;
     if (viewportArea <= 0) return 0;
@@ -35,10 +56,10 @@
     });
 
     const ratio = Math.min(adArea / viewportArea, 1.5);
-    return Math.min(ratio * 20, 30);
+    return Math.min(ratio * 13, 20);
   }
 
-  // ---- 2. Ismert ad-network scriptek száma (0-25 pont) ----
+  // 2. Ismert ad-network scriptek száma (0-15 pont)
   function scoreAdNetworkScripts() {
     const scripts = Array.from(document.querySelectorAll('script[src]'));
     let count = 0;
@@ -48,12 +69,12 @@
         if (KNOWN_AD_NETWORK_HOSTS.some((h) => host.endsWith(h))) {
           count++;
         }
-      } catch (_) { /* érvénytelen URL, kihagyjuk */ }
+      } catch (_) { /* érvénytelen URL */ }
     });
-    return Math.min(count * 5, 25);
+    return Math.min(count * 3, 15);
   }
 
-  // ---- 3. Agresszív felugró minta (0-20 pont) ----
+  // 3. Agresszív, teljes képernyős felugró (0-15 pont)
   function scoreAggressivePopup() {
     const all = document.querySelectorAll('div, section, aside');
     for (const el of all) {
@@ -64,87 +85,172 @@
 
       const rect = el.getBoundingClientRect();
       const coverage = (rect.width * rect.height) / (window.innerWidth * window.innerHeight);
-      if (coverage > 0.8) {
-        return 20;
-      }
+      if (coverage > 0.8) return 15;
     }
     return 0;
   }
 
-  // ---- 4. Tartalom/kattintás arány (0-15 pont) ----
+  // 4. Tartalom/kattintás arány (0-10 pont)
   function scoreContentClickRatio() {
     const textLength = (document.body.innerText || '').trim().length;
     const clickable = document.querySelectorAll('a, button, [onclick]').length;
-    if (textLength < 200 && clickable > 15) {
-      return 15;
-    }
-    if (textLength < 500 && clickable > 25) {
-      return 10;
-    }
+    if (textLength < 200 && clickable > 15) return 10;
+    if (textLength < 500 && clickable > 25) return 7;
     return 0;
   }
 
-  function computeLocalScore() {
-    return {
-      adDensity: scoreAdDensity(),
-      adNetworkScripts: scoreAdNetworkScripts(),
-      aggressivePopup: scoreAggressivePopup(),
-      contentClickRatio: scoreContentClickRatio()
-    };
+  // 5. Széléhez tapadó, becsúszó jellegű sávok/bannerek (0-15 pont)
+  // Ezek jellemzően alulról/oldalról "becsúszó" reklámok, amik akkor is
+  // gyanúsak, ha épp nem tűnnek el (statikus mérésnél is elkaphatók).
+  function scoreEdgeAnchoredBanners() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const candidates = document.querySelectorAll('div, section, aside, iframe');
+    let hits = 0;
+
+    for (const el of candidates) {
+      const style = window.getComputedStyle(el);
+      if (style.position !== 'fixed' && style.position !== 'sticky') continue;
+
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const area = rect.width * rect.height;
+      if (area / (vw * vh) < 0.04) continue; // túl kicsi, nem számít bannernek
+
+      const touchesBottom = rect.bottom >= vh - 5;
+      const touchesLeft = rect.left <= 5;
+      const touchesRight = rect.right >= vw - 5;
+      const touchesTop = rect.top <= 5;
+
+      if (touchesBottom || touchesLeft || touchesRight || touchesTop) {
+        hits++;
+      }
+      if (hits >= 3) break;
+    }
+
+    return Math.min(hits * 6, 15);
   }
 
-  function sumScore(parts, redirectScore) {
+  function computeLocalScore() {
     return (
-      parts.adDensity +
-      parts.adNetworkScripts +
-      parts.aggressivePopup +
-      parts.contentClickRatio +
-      redirectScore
+      scoreAdDensity() +
+      scoreAdNetworkScripts() +
+      scoreAggressivePopup() +
+      scoreContentClickRatio() +
+      scoreEdgeAnchoredBanners()
     );
   }
 
-  // ---- Toast megjelenítése ----
-  function showToast() {
-    const toast = document.createElement('div');
-    toast.textContent = 'BackScam: gyanús oldal elkerülve';
-    Object.assign(toast.style, {
-      position: 'fixed',
-      top: '16px',
-      right: '16px',
-      zIndex: '2147483647',
-      background: '#222',
-      color: '#fff',
-      padding: '10px 16px',
-      borderRadius: '8px',
-      fontFamily: 'sans-serif',
-      fontSize: '13px',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-      opacity: '0',
-      transition: 'opacity 0.2s ease-in-out'
-    });
-    document.documentElement.appendChild(toast);
-    requestAnimationFrame(() => { toast.style.opacity = '1'; });
-    return toast;
+  // ---------------------------------------------------------------------
+  // Mozgó / megjelenő-eltűnő ("flash") reklámok követése MutationObserverrel
+  // Ez azért kell, mert egy két ellenőrzés közt (2 mp) simán meg is
+  // jelenhet, el is tűnhet egy ilyen elem - ezt csak folyamatos figyeléssel
+  // lehet elkapni.
+  // ---------------------------------------------------------------------
+  const trackedNodes = new Set();
+  let transientHits = 0;
+
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      mutation.addedNodes.forEach((node) => {
+        if (isAdLikeElement(node)) {
+          trackedNodes.add(node);
+        }
+      });
+    }
+  });
+
+  function checkTransientAds() {
+    for (const node of trackedNodes) {
+      if (!node.isConnected) {
+        transientHits++;
+        trackedNodes.delete(node);
+      }
+    }
   }
 
-  // ---- Fő folyamat ----
-  function getRedirectScore() {
+  function scoreTransientAdActivity() {
+    return Math.min(transientHits * 8, 15);
+  }
+
+  // ---------------------------------------------------------------------
+  // Kattintás-követés (bait-and-switch észleléshez a background.js-ben)
+  // ---------------------------------------------------------------------
+  document.addEventListener(
+    'click',
+    (event) => {
+      const link = event.target.closest && event.target.closest('a[href]');
+      if (!link) return;
+      try {
+        const absoluteHref = new URL(link.getAttribute('href'), window.location.href).href;
+        chrome.runtime.sendMessage({ type: 'LINK_CLICKED', href: absoluteHref });
+      } catch (_) { /* érvénytelen URL, kihagyjuk */ }
+    },
+    true
+  );
+
+  // ---------------------------------------------------------------------
+  // Toast megjelenítése - nagy, feltűnő sáv az oldal tetején
+  // ---------------------------------------------------------------------
+  function showToast() {
+    const bar = document.createElement('div');
+    bar.setAttribute('role', 'alert');
+    Object.assign(bar.style, {
+      position: 'fixed',
+      top: '0',
+      left: '0',
+      right: '0',
+      zIndex: '2147483647',
+      background: 'linear-gradient(90deg, #d92c2c, #ff7a1a)',
+      color: '#fff',
+      padding: '14px 20px',
+      fontFamily: 'sans-serif',
+      fontSize: '16px',
+      fontWeight: '600',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px',
+      boxShadow: '0 3px 10px rgba(0,0,0,0.4)',
+      transform: 'translateY(-100%)',
+      transition: 'transform 0.25s ease-out'
+    });
+
+    const icon = document.createElement('span');
+    icon.textContent = '⚠️';
+    icon.style.fontSize = '20px';
+
+    const text = document.createElement('span');
+    text.textContent = 'BackScam: gyanús oldal elkerülve';
+
+    bar.appendChild(icon);
+    bar.appendChild(text);
+    document.documentElement.appendChild(bar);
+
+    requestAnimationFrame(() => { bar.style.transform = 'translateY(0)'; });
+    return bar;
+  }
+
+  // ---------------------------------------------------------------------
+  // Fő folyamat: folyamatos megfigyelés MONITOR_DURATION_MS-ig
+  // ---------------------------------------------------------------------
+  function getExtras() {
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ type: 'GET_REDIRECT_COUNT' }, (response) => {
+        chrome.runtime.sendMessage({ type: 'GET_SUSPICION_EXTRAS' }, (response) => {
           if (chrome.runtime.lastError || !response) {
-            resolve(0);
+            resolve({ redirectScore: 0, popupScore: 0, baitSwitch: false });
             return;
           }
-          resolve(Math.min((response.count || 0) * 5, 10));
+          resolve(response);
         });
       } catch (_) {
-        resolve(0);
+        resolve({ redirectScore: 0, popupScore: 0, baitSwitch: false });
       }
     });
   }
 
   function triggerEscape() {
+    observer.disconnect();
     const toast = showToast();
     setTimeout(() => {
       toast.remove();
@@ -167,30 +273,47 @@
     });
   }
 
-  async function evaluate() {
+  async function monitor() {
     const enabled = await isEnabled();
     if (!enabled) return;
 
-    const localScore1 = computeLocalScore();
-    const redirectScore = await getRedirectScore();
-    const total1 = sumScore(localScore1, redirectScore);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
 
-    if (total1 < THRESHOLD) return; // nem gyanús, nincs teendő
+    let elapsed = 0;
+    let stopped = false;
 
-    // Megerősítő újramérés rövid késleltetés után
-    setTimeout(() => {
-      const localScore2 = computeLocalScore();
-      const total2 = sumScore(localScore2, redirectScore);
-      if (total2 >= THRESHOLD) {
+    const tick = async () => {
+      if (stopped) return;
+
+      checkTransientAds();
+      const localScore = computeLocalScore() + scoreTransientAdActivity();
+      const extras = await getExtras();
+
+      const baitSwitchBonus = extras.baitSwitch ? 35 : 0;
+      const total = localScore + extras.redirectScore + extras.popupScore + baitSwitchBonus;
+
+      if (total >= THRESHOLD) {
+        stopped = true;
+        clearInterval(intervalId);
         triggerEscape();
+        return;
       }
-    }, RECHECK_DELAY_MS);
+
+      elapsed += CHECK_INTERVAL_MS;
+      if (elapsed >= MONITOR_DURATION_MS) {
+        stopped = true;
+        clearInterval(intervalId);
+        observer.disconnect();
+      }
+    };
+
+    const intervalId = setInterval(tick, CHECK_INTERVAL_MS);
+    tick(); // azonnali első mérés is
   }
 
-  // Csak akkor fusson, ha az oldal ténylegesen betöltődött
   if (document.readyState === 'complete') {
-    evaluate();
+    monitor();
   } else {
-    window.addEventListener('load', evaluate, { once: true });
+    window.addEventListener('load', monitor, { once: true });
   }
 })();
